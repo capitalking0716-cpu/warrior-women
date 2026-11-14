@@ -1,0 +1,9 @@
+# Member data and local secrets — never committed
+data/
+*.db
+*.sqlite3
+.venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+.env
