@@ -9,15 +9,21 @@ Deploy: see DEPLOY.md (Streamlit Community Cloud, free).
 The Stripe secret key comes from Streamlit Secrets (st.secrets) or the
 STRIPE_SECRET_KEY environment variable. It is never in this repo.
 Without it, the paywall stays locked and says so plainly.
+
+Presentation: warrior_women/theme.py — the same design system as
+King Warrior (black / deep purple / gold, card-based workout-app
+layout) mirrored across every view.
 """
 
+import html as _html
 import json
 import os
 from datetime import date, datetime, timedelta
 
 import streamlit as st
 
-from warrior_women import auth, challenge, coach, db, paywall, program_data as pd
+from warrior_women import auth, challenge, coach, db, paywall, theme
+from warrior_women import program_data as pd
 
 APP = pd.APP_NAME
 EQUIPMENT_OPTIONS = [
@@ -36,18 +42,10 @@ EQUIPMENT_OPTIONS = [
     "Boxes / steps",
 ]
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+DAY_LETTERS = ["M", "T", "W", "T", "F", "S", "S"]
 
 st.set_page_config(page_title=APP, page_icon="💜", layout="centered")
-st.markdown(
-    """
-    <style>
-    .stButton>button { width: 100%; min-height: 52px; font-size: 1.05rem; }
-    .stTextInput>div>div>input, .stNumberInput input { font-size: 1.05rem; }
-    h1 { font-size: 2rem; } h2 { font-size: 1.5rem; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+theme.inject_css()
 
 
 # ---------------------------------------------------------------------------
@@ -107,73 +105,187 @@ def program_day_number(profile):
 
 
 # ---------------------------------------------------------------------------
+# Design-system helpers (presentation only)
+# ---------------------------------------------------------------------------
+def chips_html(pairs):
+    """pairs: list of (text, is_gold) rendered as pill chips."""
+    inner = "".join(
+        f'<span class="kw-chip{" gold" if gold else ""}">{_html.escape(str(text))}</span>'
+        for text, gold in pairs
+    )
+    return f'<div class="kw-chips">{inner}</div>'
+
+
+def render_topbar(member=None, badge=None, badge_purple=False):
+    st.markdown(
+        theme.topbar_html(
+            "💜", "Warrior", "Women",
+            member_name=(member["name"] if member else None),
+            badge=badge, badge_purple=badge_purple,
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_nav(pages, key):
+    """Pill navigation + log out, replacing the old sidebar."""
+    col_nav, col_out = st.columns([5, 1])
+    with col_nav:
+        page = st.radio("Go to", pages, horizontal=True,
+                        label_visibility="collapsed", key=key)
+    with col_out:
+        if st.button("Log out", key=f"{key}_logout"):
+            logout()
+    return page
+
+
+def render_member_week_strip(conn, member):
+    """Mon–Sun strip for the current week: done / today / rest / upcoming."""
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    done_dates = {log["date"] for log in db.all_set_logs(conn, member["id"])}
+    rest_name = (st.session_state.profile or {}).get("rest_day") or "Sunday"
+    days = []
+    for i, weekday in enumerate(WEEKDAYS):
+        d = monday + timedelta(days=i)
+        state, mark = "", ""
+        if d.isoformat() in done_dates:
+            state, mark = "done", "✓"
+        if weekday == rest_name and state == "":
+            state, mark = "rest", "·"
+        if d == today:
+            state = "today"
+        days.append({"letter": DAY_LETTERS[i], "num": d.day,
+                     "state": state, "mark": mark})
+    st.markdown(theme.week_strip_html(days), unsafe_allow_html=True)
+
+
+def workout_started_today(conn, member_id):
+    today_iso = date.today().isoformat()
+    if st.session_state.get(f"started_{today_iso}"):
+        return True
+    return any(log["date"] == today_iso
+               for log in db.all_set_logs(conn, member_id))
+
+
+def start_button(conn, member_id):
+    """The hero Start/Continue button. Presentation state only — it
+    never touches program data; logging works exactly as before."""
+    if workout_started_today(conn, member_id):
+        st.success("🏋️ Workout in progress — let's go.")
+        return
+    if st.button("▶ Start workout", type="primary", key="start_workout"):
+        st.session_state[f"started_{date.today().isoformat()}"] = True
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Public landing
 # ---------------------------------------------------------------------------
 def render_landing():
-    st.title(f"💜 {APP}")
-    st.subheader(pd.TAGLINE)
-    st.write(pd.GOAL_FRAMING)
-    st.markdown("---")
+    st.markdown(
+        f"""
+        <div class="kw-land-hero">
+          <div class="kw-land-icon">💜</div>
+          <div class="kw-land-name">Warrior <span>Women</span></div>
+          <div class="kw-land-tag">{_html.escape(pd.TAGLINE)}</div>
+          <div class="kw-land-frame">{_html.escape(pd.GOAL_FRAMING)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.header("What you get")
     st.write(
         "A gym-based program for women, built around one goal: strong, "
         "athletic, and balanced — strong glutes and hips, a strong toned "
         "waist, and balanced shoulders and back."
     )
-    st.markdown(
-        "- **Six training days + one rest day** — strength, glutes, mobility, "
-        "footwork and conditioning\n"
-        "- **Seven-day re-entry week first** — learn every movement, nothing assumed\n"
-        "- **120-day Warrior Foundation** — Awakening, Earth, Fire, Water\n"
-        "- **24-week progression** — Foundation, Build, Warrior, Beast, Ascension, Super Saiyan\n"
-        "- **40-exercise movement library** with setup, regressions, progressions and safety\n"
-        "- **Per-set logging** with prior-performance hints, readiness checks, progress tracking\n"
-        "- **Nutrition & recovery** — protein target from your bodyweight, food, water and sleep logs\n"
-        "- **AI coach** — answers from the program and your own logs"
-    )
-    st.markdown("---")
-    st.header("💪 Start FREE — the 7-Day Challenge")
-    st.write(
-        "Not ready to commit? Start with the challenge. The full seven-day "
-        "re-entry week — every day's session, the movement library and the "
-        "AI coach — is **free for 7 days**. No card, no payment. Create a "
-        "challenge account below and Day 1 starts today."
-    )
-    st.write(
-        "On day 7, Founding Members can lock in the full program at "
-        "**$10/month — that price stays yours** for as long as you stay a "
-        "member."
-    )
-    if st.button("Join the FREE 7-Day Challenge", key="landing_challenge_btn",
-                 use_container_width=True):
-        st.session_state.join_challenge = True
-        st.rerun()
-    if st.session_state.get("join_challenge"):
-        st.success(
-            "💜 The challenge sign-up is in the first tab under "
-            "'Sign up / Log in' just below — pick **FREE 7-Day Challenge**."
+    features = [
+        ("🗓️", "Six training days + one rest day",
+         "Strength, glutes, mobility, footwork and conditioning."),
+        ("🌅", "Seven-day re-entry week first",
+         "Learn every movement, nothing assumed."),
+        ("🏛️", "120-day Warrior Foundation",
+         "Awakening, Earth, Fire, Water."),
+        ("📈", "24-week progression",
+         "Foundation, Build, Warrior, Beast, Ascension, Super Saiyan."),
+        ("📚", "40-exercise movement library",
+         "Setup, regressions, progressions and safety for every movement."),
+        ("✅", "Per-set logging",
+         "Prior-performance hints, readiness checks, progress tracking."),
+        ("🥩", "Nutrition & recovery",
+         "Protein target from your bodyweight, food, water and sleep logs."),
+        ("🤖", "AI coach",
+         "Answers from the program and your own logs."),
+    ]
+    for i in range(0, len(features), 2):
+        cols = st.columns(2)
+        for col, (icon, title, text) in zip(cols, features[i:i + 2]):
+            with col:
+                with st.container(border=True):
+                    st.markdown(
+                        f'<div class="kw-feature"><div class="kw-ficon">{icon}</div>'
+                        f'<div class="kw-ftitle">{_html.escape(title)}</div>'
+                        f'<div class="kw-ftext">{_html.escape(text)}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+
+    # The front door: free 7-Day Challenge.
+    with st.container(border=True):
+        st.markdown("### 💪 Start FREE — the 7-Day Challenge")
+        st.write(
+            "Not ready to commit? Start with the challenge. The full seven-day "
+            "re-entry week — every day's session, the movement library and the "
+            "AI coach — is **free for 7 days**. No card, no payment. Create a "
+            "challenge account below and Day 1 starts today."
         )
-    st.markdown("---")
+        st.write(
+            "On day 7, Founding Members can lock in the full program at "
+            "**$10/month — that price stays yours** for as long as you stay a "
+            "member."
+        )
+        if st.button("Join the FREE 7-Day Challenge", key="landing_challenge_btn",
+                     use_container_width=True, type="primary"):
+            st.session_state.join_challenge = True
+            st.rerun()
+        if st.session_state.get("join_challenge"):
+            st.success(
+                "💜 The challenge sign-up is in the first tab under "
+                "'Sign up / Log in' just below — pick **FREE 7-Day Challenge**."
+            )
+
     st.header("The week")
-    for split in pd.WEEKLY_SPLIT:
-        if split["exercises"]:
-            st.write(f"**{split['day']}** — {split['title']} ({split['duration_min']} min)")
-        else:
-            st.write(f"**{split['day']}** — {split['title']}")
-    st.markdown("---")
-    st.header("Membership — $10/month")
-    st.write(
-        "The full program, your own saved data, and the coach — $10 a month. "
-        "Cancel anytime in Stripe. Sign up below with the same email you use "
-        "at checkout, then pay, and your membership unlocks."
-    )
-    st.link_button("Subscribe — $10/month", pd.CHECKOUT_URL, use_container_width=True)
-    st.caption(
-        "Payment is verified against Stripe. If you paid but the app says "
-        "you are not a member yet, check that the email matches, then tap "
-        "'Check my subscription' on the member page."
-    )
-    st.markdown("---")
+    with st.container(border=True):
+        for split in pd.WEEKLY_SPLIT:
+            if split["exercises"]:
+                st.markdown(
+                    f"**{split['day']}** — {split['title']}  "
+                    f'<span class="kw-chip">⏱ {split["duration_min"]} min</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"**{split['day']}** — {split['title']} 😴")
+
+    st.header("Membership")
+    with st.container(border=True):
+        st.markdown(
+            '<div class="kw-price"><span class="kw-amount">$10</span> '
+            '<span class="kw-per">/ month</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.write(
+            "The full program, your own saved data, and the coach — $10 a month. "
+            "Cancel anytime in Stripe. Sign up below with the same email you use "
+            "at checkout, then pay, and your membership unlocks."
+        )
+        st.link_button("Subscribe — $10/month", pd.CHECKOUT_URL,
+                       use_container_width=True, type="primary")
+        st.caption(
+            "Payment is verified against Stripe. If you paid but the app says "
+            "you are not a member yet, check that the email matches, then tap "
+            "'Check my subscription' on the member page."
+        )
     with st.expander("Safety — please read"):
         for rule in pd.SAFETY_RULES:
             st.write(f"- {rule}")
@@ -183,6 +295,7 @@ def render_landing():
 # Auth
 # ---------------------------------------------------------------------------
 def render_auth():
+    st.header("Sign up / Log in")
     tab_challenge, tab_signup, tab_login = st.tabs(
         ["FREE 7-Day Challenge", "Create account", "Log in"]
     )
@@ -265,38 +378,45 @@ def render_auth():
 # Paywall
 # ---------------------------------------------------------------------------
 def render_paywall(result):
-    st.header("Membership required")
-    if result.reason == "not_configured":
-        st.warning(
-            "Payment verification is not set up on this app yet — the owner "
-            "still needs to add the Stripe key. Your subscription cannot be "
-            "checked until then, so the program stays locked."
+    with st.container(border=True):
+        st.markdown(
+            '<div class="kw-price"><span class="kw-amount">$10</span> '
+            '<span class="kw-per">/ month</span></div>',
+            unsafe_allow_html=True,
         )
-    elif result.reason == "error":
-        st.error(
-            "The subscription check failed. The program stays locked — "
-            "it never unlocks on an error. Please try again in a few minutes."
-        )
-        st.caption(result.detail)
-    else:
-        st.write(
-            "The full Warrior Women program is for members only — $10 a month. "
-            "Subscribe with the same email as this account, then tap "
-            "'Check my subscription'."
-        )
-    st.link_button("Subscribe — $10/month", pd.CHECKOUT_URL, use_container_width=True)
-    if st.button("Check my subscription", use_container_width=True):
-        result = check_subscription(force=True)
-        if result.unlocked:
-            st.success("Membership confirmed — welcome in!")
-            st.rerun()
+        st.header("Membership required")
+        if result.reason == "not_configured":
+            st.warning(
+                "Payment verification is not set up on this app yet — the owner "
+                "still needs to add the Stripe key. Your subscription cannot be "
+                "checked until then, so the program stays locked."
+            )
+        elif result.reason == "error":
+            st.error(
+                "The subscription check failed. The program stays locked — "
+                "it never unlocks on an error. Please try again in a few minutes."
+            )
+            st.caption(result.detail)
         else:
-            st.info("No active subscription found for this email yet. "
-                    "Make sure the checkout email matches your account email.")
-    st.caption(
-        "If you just paid, Stripe can take a minute. If it still does not "
-        "unlock, check the email matches, then contact support."
-    )
+            st.write(
+                "The full Warrior Women program is for members only — $10 a month. "
+                "Subscribe with the same email as this account, then tap "
+                "'Check my subscription'."
+            )
+        st.link_button("Subscribe — $10/month", pd.CHECKOUT_URL,
+                       use_container_width=True, type="primary")
+        if st.button("Check my subscription", use_container_width=True):
+            result = check_subscription(force=True)
+            if result.unlocked:
+                st.success("Membership confirmed — welcome in!")
+                st.rerun()
+            else:
+                st.info("No active subscription found for this email yet. "
+                        "Make sure the checkout email matches your account email.")
+        st.caption(
+            "If you just paid, Stripe can take a minute. If it still does not "
+            "unlock, check the email matches, then contact support."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -304,29 +424,36 @@ def render_paywall(result):
 # ---------------------------------------------------------------------------
 def render_membership_offer(heading="Become a Founding Member"):
     """The day-7 conversion offer: Founding Member price lock + checkout."""
-    st.header(heading)
-    st.write(
-        "**Founding Member — $10/month, locked at that price** for as long "
-        "as you stay a member. The full Warrior Women program unlocks: the "
-        "weekly split, the 120-day Warrior Foundation, the 24-week "
-        "progression, progress tracking, nutrition & recovery — everything "
-        "past the re-entry week."
-    )
-    st.write(
-        "Your challenge start date and every log you made carry straight "
-        "over — you keep going from exactly where you are. Subscribe with "
-        "the **same email** as this account, then tap 'Check my subscription'."
-    )
-    st.link_button("Become a member — $10/month", pd.CHECKOUT_URL, use_container_width=True)
-    if st.button("Check my subscription", use_container_width=True, key="offer_check_btn"):
-        result = check_subscription(force=True)
-        if result.unlocked:
-            st.success("Membership confirmed — welcome in, Founding Member!")
-            st.rerun()
-        else:
-            st.info("No active subscription found for this email yet. "
-                    "Make sure the checkout email matches your account email.")
-    st.caption("Cancel anytime in Stripe.")
+    with st.container(border=True):
+        st.markdown(
+            '<div class="kw-price"><span class="kw-amount">$10</span> '
+            '<span class="kw-per">/ month · Founding price, locked</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.header(heading)
+        st.write(
+            "**Founding Member — $10/month, locked at that price** for as long "
+            "as you stay a member. The full Warrior Women program unlocks: the "
+            "weekly split, the 120-day Warrior Foundation, the 24-week "
+            "progression, progress tracking, nutrition & recovery — everything "
+            "past the re-entry week."
+        )
+        st.write(
+            "Your challenge start date and every log you made carry straight "
+            "over — you keep going from exactly where you are. Subscribe with "
+            "the **same email** as this account, then tap 'Check my subscription'."
+        )
+        st.link_button("Become a member — $10/month", pd.CHECKOUT_URL,
+                       use_container_width=True, type="primary")
+        if st.button("Check my subscription", use_container_width=True, key="offer_check_btn"):
+            result = check_subscription(force=True)
+            if result.unlocked:
+                st.success("Membership confirmed — welcome in, Founding Member!")
+                st.rerun()
+            else:
+                st.info("No active subscription found for this email yet. "
+                        "Make sure the checkout email matches your account email.")
+        st.caption("Cancel anytime in Stripe.")
 
 
 def render_challenge_program():
@@ -341,14 +468,15 @@ def render_challenge_program():
             for item in d["items"]:
                 st.write(f"- {item}")
             st.caption(d["note"])
-    st.markdown("---")
-    st.subheader("🔒 Members only")
-    st.write(
-        "The weekly split, the 120-day Warrior Foundation, the 24-week "
-        "progression, progression rules and deloads are the full program — "
-        "they unlock with membership."
-    )
-    st.link_button("Become a member — $10/month", pd.CHECKOUT_URL, use_container_width=True)
+    with st.container(border=True):
+        st.subheader("🔒 Members only")
+        st.write(
+            "The weekly split, the 120-day Warrior Foundation, the 24-week "
+            "progression, progression rules and deloads are the full program — "
+            "they unlock with membership."
+        )
+        st.link_button("Become a member — $10/month", pd.CHECKOUT_URL,
+                       use_container_width=True, type="primary")
 
 
 def render_challenge_app():
@@ -357,47 +485,42 @@ def render_challenge_app():
     if "profile" not in st.session_state:
         refresh_profile()
     if not st.session_state.profile or not st.session_state.profile.get("onboarding_done"):
+        render_topbar(member)
         render_onboarding()
         return
     profile = st.session_state.profile
     day_no = challenge.challenge_day_number(profile)
 
-    st.sidebar.title(f"💜 {APP}")
-    st.sidebar.write(f"Logged in as {member['name']}")
-    st.sidebar.write(f"{member['email']}")
-    st.sidebar.markdown("---")
     finished = challenge.challenge_finished(day_no)
     if finished:
-        st.sidebar.write("**FREE 7-Day Challenge — complete** 🎉")
-        page = None
-    else:
-        st.sidebar.write(f"**FREE 7-Day Challenge — Day {day_no} of 7**")
-        st.sidebar.progress(day_no / challenge.CHALLENGE_DAYS)
-        page = st.sidebar.radio(
-            "Go to",
-            ["Today", "Program", "Movement Library", "AI Coach", "Settings"],
-        )
-    if st.sidebar.button("Log out"):
-        logout()
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Membership: $10/month, Founding Member price lock. Cancel anytime in Stripe.")
-
-    if finished:
+        render_topbar(member, badge="Challenge complete", badge_purple=True)
         # The free week is over: the rest is members only.
-        st.header("🎉 Challenge complete!")
-        st.write(
-            "You finished the seven-day re-entry week — every movement "
-            "learned, every day logged. The rest of the program is "
-            "members only."
-        )
+        with st.container(border=True):
+            st.markdown(
+                theme.hero_html(
+                    "7-Day Challenge",
+                    "🎉 Challenge complete!",
+                    focus="You finished the seven-day re-entry week — every "
+                          "movement learned, every day logged. The rest of "
+                          "the program is members only.",
+                ),
+                unsafe_allow_html=True,
+            )
         render_membership_offer()
+        if st.button("Log out", use_container_width=True):
+            logout()
         return
 
+    render_topbar(member, badge=f"Day {day_no} of 7", badge_purple=True)
+    st.progress(day_no / challenge.CHALLENGE_DAYS)
+    page = render_nav(
+        ["Today", "Program", "Movement Library", "AI Coach", "Settings"],
+        key="nav_challenge",
+    )
     if page == "Today":
         st.info(f"💪 **Challenge Day {day_no} of 7** — your free re-entry week.")
         render_today()
         if challenge.show_membership_offer(day_no):
-            st.markdown("---")
             render_membership_offer(heading="Last challenge day — keep going as a Founding Member")
     elif page == "Program":
         render_challenge_program()
@@ -407,6 +530,11 @@ def render_challenge_app():
         render_coach()
     elif page == "Settings":
         render_settings()
+    st.markdown(
+        '<div class="kw-footer">Membership: $10/month, Founding Member '
+        "price lock. Cancel anytime in Stripe.</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -465,87 +593,139 @@ def today_session(profile):
     return ("Program", split)
 
 
+def render_readiness():
+    """Daily readiness check + latest verdict."""
+    member = current_member()
+    conn = get_conn()
+    with st.container(border=True):
+        st.subheader("🩺 Readiness check")
+        with st.form("readiness"):
+            sleep = st.number_input("Sleep last night (hours)", min_value=0.0, max_value=14.0, value=7.0, step=0.5)
+            energy = st.slider("Energy (1 low - 5 great)", 1, 5, 3)
+            soreness = st.slider("Soreness (1 none - 5 very sore)", 1, 5, 2)
+            stress = st.slider("Stress (1 calm - 5 very stressed)", 1, 5, 2)
+            pain = st.checkbox("I have pain today")
+            if st.form_submit_button("Save readiness", use_container_width=True):
+                verdict = pd.readiness_verdict(sleep, energy, soreness, stress, pain)
+                db.log_readiness(conn, member["id"], date.today().isoformat(),
+                                 sleep, energy, soreness, stress, pain, verdict)
+                st.success(f"Readiness: **{verdict}** — {pd.READINESS_RULES[verdict]}")
+        latest = db.latest_readiness(conn, member["id"])
+        if latest:
+            st.info(f"Latest readiness: **{latest['verdict']}** ({latest['date']}) — "
+                    f"{pd.READINESS_RULES[latest['verdict']]}")
+
+
+def render_exercise_card(idx, ex_name, sets_reps, note, session, conn, member):
+    """One exercise as a workout-app card: name + prescription chips,
+    last performance, form cues, set-logging row. Widget keys and the
+    log call are exactly as before. (Warrior Women has no demo clips —
+    no demo slot is faked.)"""
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="kw-exhead"><span class="kw-exnum">{idx}</span>'
+            f'<span class="kw-exname">{_html.escape(ex_name)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(chips_html([(sets_reps, True), (note, False)]),
+                    unsafe_allow_html=True)
+        ex = pd.get_exercise(ex_name.split(" (")[0].split(" or ")[0].split(" / ")[0])
+        last = db.last_performance(conn, member["id"], ex_name)
+        if last:
+            prev = "; ".join(
+                f"set {s['set_number']}: {s['reps']} reps"
+                + (f" @ {s['load_kg']} kg" if s["load_kg"] else "")
+                for s in last["sets"]
+            )
+            st.caption(f"Last time ({last['date']}): {prev}")
+        if ex:
+            with st.expander("How to do it — form & cues"):
+                st.caption(f"**How:** {ex['execution']}")
+                st.caption(f"**Easier:** {ex['regression']} | **Harder:** {ex['progression']}")
+                st.caption(f"**Safety:** {ex['safety']}")
+        n_sets = st.number_input(f"Sets for {ex_name}", 1, 6, 3, key=f"n_{ex_name}")
+        cols = st.columns(2)
+        reps = cols[0].number_input("Reps per set", 1, 50, 10, key=f"r_{ex_name}")
+        load = cols[1].number_input("Load (kg, 0 = bodyweight)", 0.0, 300.0, 0.0, step=2.5, key=f"l_{ex_name}")
+        rir = st.slider("Reps in reserve (RIR)", 0, 5, 2, key=f"rir_{ex_name}")
+        if st.button(f"Log {ex_name}", key=f"log_{ex_name}", use_container_width=True):
+            for s in range(1, int(n_sets) + 1):
+                db.log_set(conn, member["id"], date.today().isoformat(),
+                           f"{session['day']} — {session['title']}",
+                           ex_name, s, reps=int(reps), load_kg=float(load),
+                           rir=int(rir))
+            st.success(f"Logged {int(n_sets)} sets of {ex_name}.")
+
+
 def render_today():
     profile = st.session_state.profile
     conn = get_conn()
     member = current_member()
-    st.header("Today")
-
-    # Readiness check
-    st.subheader("Readiness check")
-    with st.form("readiness"):
-        sleep = st.number_input("Sleep last night (hours)", min_value=0.0, max_value=14.0, value=7.0, step=0.5)
-        energy = st.slider("Energy (1 low - 5 great)", 1, 5, 3)
-        soreness = st.slider("Soreness (1 none - 5 very sore)", 1, 5, 2)
-        stress = st.slider("Stress (1 calm - 5 very stressed)", 1, 5, 2)
-        pain = st.checkbox("I have pain today")
-        if st.form_submit_button("Save readiness", use_container_width=True):
-            verdict = pd.readiness_verdict(sleep, energy, soreness, stress, pain)
-            db.log_readiness(conn, member["id"], date.today().isoformat(),
-                             sleep, energy, soreness, stress, pain, verdict)
-            st.success(f"Readiness: **{verdict}** — {pd.READINESS_RULES[verdict]}")
-    latest = db.latest_readiness(conn, member["id"])
-    if latest:
-        st.info(f"Latest readiness: **{latest['verdict']}** ({latest['date']}) — "
-                f"{pd.READINESS_RULES[latest['verdict']]}")
-
-    # Today's session
     kind, session = today_session(profile)
-    st.subheader("Today's session")
+    today_label = date.today().strftime("%A, %b %d")
+
     if kind == "Re-entry":
         day_no = program_day_number(profile)
-        st.write(f"**Re-entry — Day {day_no}: {session['title']}**")
-        st.caption(session["focus"])
-        for item in session["items"]:
-            st.write(f"- {item}")
-        st.caption(session["note"])
-        st.caption("Log any weights you used in the session below, or just tick it done.")
-        if st.button("Mark re-entry day done", use_container_width=True, key="re_done"):
-            db.log_set(conn, member["id"], date.today().isoformat(),
-                       f"Re-entry Day {day_no}", "Re-entry session", 1,
-                       notes=session["title"])
-            st.success("Logged. See you tomorrow.")
+        with st.container(border=True):
+            st.markdown(
+                theme.hero_html(
+                    f"Today's workout · Re-entry week · {today_label}",
+                    f"Day {day_no} — {session['title']}",
+                    focus=session["focus"],
+                    chips=[(f"{len(session['items'])} movements", False),
+                           ("Re-entry pace — learn the movements", True)],
+                ),
+                unsafe_allow_html=True,
+            )
+            start_button(conn, member["id"])
+        render_member_week_strip(conn, member)
+        render_readiness()
+        with st.container(border=True):
+            st.subheader("Session checklist")
+            for item in session["items"]:
+                st.write(f"- {item}")
+            st.caption(session["note"])
+            st.caption("Log any weights you used in the session below, or just tick it done.")
+            if st.button("Mark re-entry day done", use_container_width=True, key="re_done"):
+                db.log_set(conn, member["id"], date.today().isoformat(),
+                           f"Re-entry Day {day_no}", "Re-entry session", 1,
+                           notes=session["title"])
+                st.success("Logged. See you tomorrow.")
     else:
-        st.write(f"**{session['day']} — {session['title']}** ({session['duration_min']} min)")
-        st.caption(session["focus"])
+        exercises = session["exercises"]
+        with st.container(border=True):
+            st.markdown(
+                theme.hero_html(
+                    f"Today's workout · {today_label}",
+                    session["title"],
+                    focus=session["focus"],
+                    chips=[(f"⏱ {session['duration_min']} min", False),
+                           (f"🏋️ {len(exercises)} exercises", False)],
+                ),
+                unsafe_allow_html=True,
+            )
+            if exercises:
+                start_button(conn, member["id"])
+            else:
+                st.info("😴 Rest day — recover, eat, sleep. The work grows between sessions.")
+        render_member_week_strip(conn, member)
+        render_readiness()
         if session.get("note"):
             st.info(session["note"])
-        # Log sets per exercise
-        for ex_name, sets_reps, note in session["exercises"]:
-            with st.expander(f"{ex_name} — {sets_reps} ({note})"):
-                ex = pd.get_exercise(ex_name.split(" (")[0].split(" or ")[0].split(" / ")[0])
-                last = db.last_performance(conn, member["id"], ex_name)
-                if last:
-                    prev = "; ".join(
-                        f"set {s['set_number']}: {s['reps']} reps"
-                        + (f" @ {s['load_kg']} kg" if s["load_kg"] else "")
-                        for s in last["sets"]
-                    )
-                    st.caption(f"Last time ({last['date']}): {prev}")
-                if ex:
-                    st.caption(f"**How:** {ex['execution']}")
-                    st.caption(f"**Easier:** {ex['regression']} | **Harder:** {ex['progression']}")
-                    st.caption(f"**Safety:** {ex['safety']}")
-                n_sets = st.number_input(f"Sets for {ex_name}", 1, 6, 3, key=f"n_{ex_name}")
-                cols = st.columns(2)
-                reps = cols[0].number_input("Reps per set", 1, 50, 10, key=f"r_{ex_name}")
-                load = cols[1].number_input("Load (kg, 0 = bodyweight)", 0.0, 300.0, 0.0, step=2.5, key=f"l_{ex_name}")
-                rir = st.slider("Reps in reserve (RIR)", 0, 5, 2, key=f"rir_{ex_name}")
-                if st.button(f"Log {ex_name}", key=f"log_{ex_name}", use_container_width=True):
-                    for s in range(1, int(n_sets) + 1):
-                        db.log_set(conn, member["id"], date.today().isoformat(),
-                                   f"{session['day']} — {session['title']}",
-                                   ex_name, s, reps=int(reps), load_kg=float(load),
-                                   rir=int(rir))
-                    st.success(f"Logged {int(n_sets)} sets of {ex_name}.")
+        for idx, (ex_name, sets_reps, note) in enumerate(exercises, 1):
+            render_exercise_card(idx, ex_name, sets_reps, note, session, conn, member)
 
     # Week progress
     monday = date.today() - timedelta(days=date.today().weekday())
     sunday = monday + timedelta(days=6)
     done = db.sessions_this_week(conn, member["id"], monday.isoformat(), sunday.isoformat())
-    st.metric("Training days logged this week", f"{done} / 6")
     day_no = program_day_number(profile)
     block, phase, week = pd.week_for_day_number(day_no)
+    cols = st.columns(2)
+    with cols[0]:
+        st.metric("Training days logged this week", f"{done} / 6")
+    with cols[1]:
+        st.metric("Program week", f"Week {week}")
     st.write(f"**{block['name']}** ({block['days']}) · **Week {week}** — {phase['name']} phase")
 
 
@@ -600,47 +780,67 @@ def render_progress():
     st.header("Progress")
     conn = get_conn()
     member = current_member()
-    st.subheader("Log a check-in (every 4 weeks, or when you weigh in)")
-    with st.form("progress"):
-        weight = st.number_input("Weight (kg)", min_value=0.0, max_value=200.0, value=0.0, step=0.5)
-        waist = st.number_input("Waist (cm) — optional", min_value=0.0, max_value=200.0, value=0.0, step=0.5)
-        balance_l = st.number_input("Single-leg balance, left (sec)", min_value=0.0, max_value=300.0, value=0.0, step=1.0)
-        balance_r = st.number_input("Single-leg balance, right (sec)", min_value=0.0, max_value=300.0, value=0.0, step=1.0)
-        pushups = st.number_input("Clean push-ups (your variation)", min_value=0, max_value=200, value=0, step=1)
-        walk = st.number_input("Six-minute walk distance (m) — optional", min_value=0.0, max_value=2000.0, value=0.0, step=10.0)
-        confidence = st.slider("Confidence (1-5)", 1, 5, 3)
-        notes = st.text_area("Notes")
-        if st.form_submit_button("Save check-in", use_container_width=True):
-            db.log_progress(
-                conn, member["id"], date.today().isoformat(),
-                weight_kg=(weight or None), waist_cm=(waist or None),
-                balance_left_sec=(balance_l or None), balance_right_sec=(balance_r or None),
-                pushups=(pushups or None), walk_m=(walk or None),
-                confidence_rating=confidence, notes=notes.strip() or None,
-            )
-            st.success("Check-in saved.")
+    history = db.progress_history(conn, member["id"])
+    if history:
+        latest = max(history, key=lambda h: h["date"])
+        latest_waist = next((h for h in sorted(history, key=lambda h: h["date"], reverse=True)
+                             if h.get("waist_cm")), None)
+        latest_pushups = next((h for h in sorted(history, key=lambda h: h["date"], reverse=True)
+                               if h.get("pushups")), None)
+        cards = []
+        if latest.get("weight_kg"):
+            cards.append(("Weight", f"{latest['weight_kg']} kg"))
+        if latest_waist:
+            cards.append(("Waist", f"{latest_waist['waist_cm']} cm"))
+        if latest_pushups:
+            cards.append(("Clean push-ups", f"{latest_pushups['pushups']}"))
+        cards.append(("Check-ins", f"{len(history)}"))
+        cols = st.columns(len(cards))
+        for col, (label, value) in zip(cols, cards):
+            with col:
+                st.metric(label, value)
+    with st.container(border=True):
+        st.subheader("Log a check-in (every 4 weeks, or when you weigh in)")
+        with st.form("progress"):
+            weight = st.number_input("Weight (kg)", min_value=0.0, max_value=200.0, value=0.0, step=0.5)
+            waist = st.number_input("Waist (cm) — optional", min_value=0.0, max_value=200.0, value=0.0, step=0.5)
+            balance_l = st.number_input("Single-leg balance, left (sec)", min_value=0.0, max_value=300.0, value=0.0, step=1.0)
+            balance_r = st.number_input("Single-leg balance, right (sec)", min_value=0.0, max_value=300.0, value=0.0, step=1.0)
+            pushups = st.number_input("Clean push-ups (your variation)", min_value=0, max_value=200, value=0, step=1)
+            walk = st.number_input("Six-minute walk distance (m) — optional", min_value=0.0, max_value=2000.0, value=0.0, step=10.0)
+            confidence = st.slider("Confidence (1-5)", 1, 5, 3)
+            notes = st.text_area("Notes")
+            if st.form_submit_button("Save check-in", use_container_width=True):
+                db.log_progress(
+                    conn, member["id"], date.today().isoformat(),
+                    weight_kg=(weight or None), waist_cm=(waist or None),
+                    balance_left_sec=(balance_l or None), balance_right_sec=(balance_r or None),
+                    pushups=(pushups or None), walk_m=(walk or None),
+                    confidence_rating=confidence, notes=notes.strip() or None,
+                )
+                st.success("Check-in saved.")
     st.subheader("Baseline tests (repeat every 4 weeks)")
     for test in pd.BASELINE_TESTS:
         st.write(f"- {test}")
     st.subheader("History")
-    history = db.progress_history(conn, member["id"])
     if not history:
         st.caption("No check-ins yet. Your first one appears here.")
     else:
         weights = {h["date"]: h["weight_kg"] for h in history if h.get("weight_kg")}
         if len(weights) >= 2:
             st.line_chart(weights)
-        for h in history[:10]:
-            bits = [f"{h['date']}"]
-            if h.get("weight_kg"):
-                bits.append(f"{h['weight_kg']} kg")
-            if h.get("waist_cm"):
-                bits.append(f"waist {h['waist_cm']} cm")
-            if h.get("pushups"):
-                bits.append(f"{h['pushups']} push-ups")
-            if h.get("balance_left_sec"):
-                bits.append(f"balance L {h['balance_left_sec']}s / R {h['balance_right_sec']}s")
-            st.write(" · ".join(bits))
+        with st.container(border=True):
+            for h in history[:10]:
+                bits = [f"{h['date']}"]
+                if h.get("weight_kg"):
+                    bits.append(f"{h['weight_kg']} kg")
+                if h.get("waist_cm"):
+                    bits.append(f"waist {h['waist_cm']} cm")
+                if h.get("pushups"):
+                    bits.append(f"{h['pushups']} push-ups")
+                if h.get("balance_left_sec"):
+                    bits.append(f"balance L {h['balance_left_sec']}s / R {h['balance_right_sec']}s")
+                st.write(" · ".join(bits))
 
 
 def render_nutrition():
@@ -652,20 +852,21 @@ def render_nutrition():
         st.metric("Protein target", f"{target[0]}-{target[1]} g / day")
     else:
         st.caption("Add your weight in Settings to see your protein target.")
-    st.subheader("Log today")
     conn = get_conn()
     member = current_member()
-    with st.form("nutrition"):
-        meals = st.text_area("What you ate today (one meal per line)")
-        protein = st.number_input("Protein today (g)", min_value=0.0, max_value=500.0, value=0.0, step=5.0)
-        water = st.number_input("Water (ml)", min_value=0.0, max_value=6000.0, value=0.0, step=250.0)
-        sleep = st.number_input("Sleep last night (hours)", min_value=0.0, max_value=14.0, value=7.0, step=0.5)
-        if st.form_submit_button("Save day", use_container_width=True):
-            meal_list = [m.strip() for m in meals.splitlines() if m.strip()]
-            db.log_nutrition(conn, member["id"], date.today().isoformat(),
-                             meals=meal_list, protein_g=protein, water_ml=water,
-                             sleep_hours=sleep)
-            st.success("Day saved.")
+    with st.container(border=True):
+        st.subheader("Log today")
+        with st.form("nutrition"):
+            meals = st.text_area("What you ate today (one meal per line)")
+            protein = st.number_input("Protein today (g)", min_value=0.0, max_value=500.0, value=0.0, step=5.0)
+            water = st.number_input("Water (ml)", min_value=0.0, max_value=6000.0, value=0.0, step=250.0)
+            sleep = st.number_input("Sleep last night (hours)", min_value=0.0, max_value=14.0, value=7.0, step=0.5)
+            if st.form_submit_button("Save day", use_container_width=True):
+                meal_list = [m.strip() for m in meals.splitlines() if m.strip()]
+                db.log_nutrition(conn, member["id"], date.today().isoformat(),
+                                 meals=meal_list, protein_g=protein, water_ml=water,
+                                 sleep_hours=sleep)
+                st.success("Day saved.")
     st.subheader("Guidance")
     for line in pd.NUTRITION_GUIDANCE:
         st.write(f"- {line}")
@@ -683,7 +884,8 @@ def render_nutrition():
 
 def render_coach():
     st.header("AI Coach")
-    st.caption(coach.COACH_IDENTITY)
+    with st.container(border=True):
+        st.caption(coach.COACH_IDENTITY)
     profile = st.session_state.profile or {}
     conn = get_conn()
     member = current_member()
@@ -694,8 +896,9 @@ def render_coach():
         st.markdown(reply)
         st.session_state.setdefault("coach_history", []).append((question, reply))
     for q, a in reversed(st.session_state.get("coach_history", [])):
-        st.markdown(f"**You:** {q}")
-        st.markdown(a)
+        with st.container(border=True):
+            st.markdown(f"**You:** {q}")
+            st.markdown(a)
 
 
 def render_settings():
@@ -703,35 +906,37 @@ def render_settings():
     profile = st.session_state.profile or {}
     conn = get_conn()
     member = current_member()
-    st.subheader("Your profile")
-    with st.form("settings"):
-        height = st.number_input("Height (cm)", min_value=120.0, max_value=220.0,
-                                 value=float(profile.get("height_cm") or 165.0), step=1.0)
-        weight = st.number_input("Weight (kg)", min_value=35.0, max_value=200.0,
-                                 value=float(profile.get("weight_kg") or 70.0), step=0.5)
-        equipment = st.multiselect("Gym equipment you have", EQUIPMENT_OPTIONS,
-                                   default=profile.get("equipment") or [])
-        rest_day = st.selectbox("Rest day", WEEKDAYS,
-                                index=WEEKDAYS.index(profile.get("rest_day") or "Sunday"))
-        if st.form_submit_button("Save settings", use_container_width=True):
-            db.upsert_profile(conn, member["id"], height_cm=height, weight_kg=weight,
-                              equipment=equipment, rest_day=rest_day)
-            refresh_profile()
-            st.success("Settings saved.")
-    st.subheader("Your data")
-    export = {
-        "member": {"email": member["email"], "name": member["name"]},
-        "profile": {k: v for k, v in (profile or {}).items() if k != "member_id"},
-        "set_logs": db.all_set_logs(conn, member["id"]),
-        "progress": db.progress_history(conn, member["id"], limit=100),
-        "nutrition": db.nutrition_history(conn, member["id"], limit=100),
-    }
-    st.download_button("Download my data (JSON)", json.dumps(export, indent=2, default=str),
-                       file_name="warrior-women-my-data.json", mime="application/json",
-                       use_container_width=True)
-    st.caption("Your measurements and data are private to your account.")
-    if st.button("Log out", use_container_width=True):
-        logout()
+    with st.container(border=True):
+        st.subheader("Your profile")
+        with st.form("settings"):
+            height = st.number_input("Height (cm)", min_value=120.0, max_value=220.0,
+                                     value=float(profile.get("height_cm") or 165.0), step=1.0)
+            weight = st.number_input("Weight (kg)", min_value=35.0, max_value=200.0,
+                                     value=float(profile.get("weight_kg") or 70.0), step=0.5)
+            equipment = st.multiselect("Gym equipment you have", EQUIPMENT_OPTIONS,
+                                       default=profile.get("equipment") or [])
+            rest_day = st.selectbox("Rest day", WEEKDAYS,
+                                    index=WEEKDAYS.index(profile.get("rest_day") or "Sunday"))
+            if st.form_submit_button("Save settings", use_container_width=True):
+                db.upsert_profile(conn, member["id"], height_cm=height, weight_kg=weight,
+                                  equipment=equipment, rest_day=rest_day)
+                refresh_profile()
+                st.success("Settings saved.")
+    with st.container(border=True):
+        st.subheader("Your data")
+        export = {
+            "member": {"email": member["email"], "name": member["name"]},
+            "profile": {k: v for k, v in (profile or {}).items() if k != "member_id"},
+            "set_logs": db.all_set_logs(conn, member["id"]),
+            "progress": db.progress_history(conn, member["id"], limit=100),
+            "nutrition": db.nutrition_history(conn, member["id"], limit=100),
+        }
+        st.download_button("Download my data (JSON)", json.dumps(export, indent=2, default=str),
+                           file_name="warrior-women-my-data.json", mime="application/json",
+                           use_container_width=True)
+        st.caption("Your measurements and data are private to your account.")
+        if st.button("Log out", use_container_width=True):
+            logout()
 
 
 def render_member_app():
@@ -739,19 +944,14 @@ def render_member_app():
     if "profile" not in st.session_state:
         refresh_profile()
     if not st.session_state.profile or not st.session_state.profile.get("onboarding_done"):
+        render_topbar(member)
         render_onboarding()
         return
-    st.sidebar.title(f"💜 {APP}")
-    st.sidebar.write(f"Logged in as {member['name']}")
-    st.sidebar.write(f"{member['email']}")
-    page = st.sidebar.radio(
-        "Go to",
+    render_topbar(member, badge="Member")
+    page = render_nav(
         ["Today", "Program", "Movement Library", "Progress", "Nutrition & Recovery", "AI Coach", "Settings"],
+        key="nav_member",
     )
-    if st.sidebar.button("Log out"):
-        logout()
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Membership: $10/month · Cancel anytime in Stripe.")
     if page == "Today":
         render_today()
     elif page == "Program":
@@ -766,6 +966,10 @@ def render_member_app():
         render_coach()
     elif page == "Settings":
         render_settings()
+    st.markdown(
+        '<div class="kw-footer">Membership: $10/month · Cancel anytime in Stripe.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +979,6 @@ def main():
     member = current_member()
     if not member:
         render_landing()
-        st.markdown("---")
         render_auth()
         return
     result = check_subscription()
@@ -791,8 +994,8 @@ def main():
     if access == challenge.CHALLENGE:
         render_challenge_app()
         return
+    render_topbar(member)
     render_paywall(result)
-    st.markdown("---")
     if st.button("Log out", use_container_width=True):
         logout()
 
